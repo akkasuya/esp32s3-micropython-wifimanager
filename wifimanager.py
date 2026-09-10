@@ -3,7 +3,6 @@ import socket
 import json
 import os
 import time
-import ntptime
 from machine import RTC
 
 class WiFiManager:
@@ -21,14 +20,13 @@ class WiFiManager:
             with open(self.config_file, 'r') as f:
                 return json.load(f)
         except:
-            return {"ssid": "", "password": "", "ntp_server": "pool.ntp.org"}
+            return {"ssid": "", "password": ""}
     
-    def save_config(self, ssid, password, ntp_server="pool.ntp.org"):
+    def save_config(self, ssid, password):
         """Save WiFi configuration to file"""
         self.config = {
             "ssid": ssid,
-            "password": password,
-            "ntp_server": ntp_server
+            "password": password
         }
         try:
             with open(self.config_file, 'w') as f:
@@ -120,15 +118,37 @@ class WiFiManager:
                 
                 ssid = params.get("ssid", "")
                 password = params.get("password", "")
-                ntp_server = params.get("ntp_server", "pool.ntp.org")
                 
                 if ssid and password:
-                    if self.save_config(ssid, password, ntp_server):
+                    if self.save_config(ssid, password):
                         response = self.get_success_page()
                         print(f"Credentials saved - SSID: {ssid}")
                         return response
             
             return self.get_error_page("Failed to save configuration")
+        
+        # Handle POST request - update time from client
+        elif request.startswith("POST /update_time "):
+            body_start = request.find("\r\n\r\n")
+            if body_start != -1:
+                body = request[body_start + 4:]
+                try:
+                    data = json.loads(body)
+                    timestamp = data.get("timestamp")
+                    
+                    if timestamp:
+                        if self.set_rtc_time(timestamp):
+                            return self.get_json_response({"status": "success", "message": "Time updated"})
+                        else:
+                            return self.get_json_response({"status": "error", "message": "Failed to update time"}, 400)
+                except:
+                    return self.get_json_response({"status": "error", "message": "Invalid JSON"}, 400)
+            
+            return self.get_json_response({"status": "error", "message": "Missing timestamp"}, 400)
+        
+        # Handle GET request for current RTC time
+        elif request.startswith("GET /get_time "):
+            return self.get_rtc_time_json()
         
         # Handle GET request for status
         elif request.startswith("GET /status "):
@@ -148,8 +168,64 @@ class WiFiManager:
                 params[key] = value
         return params
     
+    def set_rtc_time(self, timestamp):
+        """Set RTC time from Unix timestamp"""
+        try:
+            # Convert Unix timestamp to time tuple
+            # timestamp is in milliseconds, convert to seconds
+            timestamp_sec = timestamp // 1000
+            
+            # Convert Unix timestamp to (year, month, day, hour, minute, second, weekday, yearday)
+            # Using a simple method - this is a basic implementation
+            import time as time_module
+            time_tuple = time_module.gmtime(timestamp_sec)
+            
+            # Convert to RTC format (year, month, day, weekday, hour, minute, second, microseconds)
+            rtc_time = (
+                time_tuple[0],           # year
+                time_tuple[1],           # month
+                time_tuple[2],           # day
+                time_tuple[6] + 1,       # weekday (0=Monday in gmtime, but we add 1)
+                time_tuple[3],           # hour
+                time_tuple[4],           # minute
+                time_tuple[5],           # second
+                0                        # microseconds
+            )
+            
+            rtc = RTC()
+            rtc.datetime(rtc_time)
+            
+            print(f"RTC time set to: {rtc.datetime()}")
+            return True
+        except Exception as e:
+            print(f"Failed to set RTC time: {e}")
+            return False
+    
+    def get_rtc_time_json(self):
+        """Return current RTC time as JSON"""
+        try:
+            rtc = RTC()
+            time_tuple = rtc.datetime()
+            
+            # Format: (year, month, day, weekday, hour, minute, second, microseconds)
+            time_data = {
+                "year": time_tuple[0],
+                "month": time_tuple[1],
+                "day": time_tuple[2],
+                "weekday": time_tuple[3],
+                "hour": time_tuple[4],
+                "minute": time_tuple[5],
+                "second": time_tuple[6],
+                "microsecond": time_tuple[7]
+            }
+            
+            return self.get_json_response(time_data)
+        except Exception as e:
+            print(f"Failed to get RTC time: {e}")
+            return self.get_json_response({"error": str(e)}, 500)
+    
     def get_config_page(self):
-        """Return HTML configuration page"""
+        """Return HTML configuration page with time sync"""
         html = """HTTP/1.1 200 OK
 Content-Type: text/html; charset=utf-8
 Content-Length: {length}
@@ -161,37 +237,134 @@ Content-Length: {length}
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ESP32 WiFi Manager</title>
     <style>
-        body {{ font-family: Arial, sans-serif; max-width: 500px; margin: 50px auto; }}
+        body {{ font-family: Arial, sans-serif; max-width: 500px; margin: 30px auto; padding: 20px; }}
         .container {{ background: #f0f0f0; padding: 30px; border-radius: 10px; }}
         h1 {{ color: #333; text-align: center; }}
+        .section {{ margin-bottom: 30px; }}
+        .section h2 {{ font-size: 18px; color: #555; border-bottom: 2px solid #007bff; padding-bottom: 10px; }}
         form {{ display: flex; flex-direction: column; }}
         label {{ margin-top: 15px; font-weight: bold; color: #555; }}
         input, select {{ padding: 10px; margin-top: 5px; border: 1px solid #ddd; border-radius: 5px; }}
-        button {{ margin-top: 20px; padding: 12px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }}
+        button {{ margin-top: 15px; padding: 12px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }}
         button:hover {{ background: #0056b3; }}
         .info {{ background: #e7f3ff; padding: 15px; margin-bottom: 20px; border-radius: 5px; color: #004085; }}
+        .time-display {{ background: white; padding: 15px; border-radius: 5px; margin-top: 10px; text-align: center; }}
+        .time-display .label {{ font-size: 12px; color: #999; margin-bottom: 5px; }}
+        .time-display .time {{ font-size: 32px; font-weight: bold; color: #007bff; font-family: monospace; }}
+        .status {{ margin-top: 10px; padding: 10px; border-radius: 5px; text-align: center; font-weight: bold; }}
+        .status.success {{ background: #d4edda; color: #155724; }}
+        .status.error {{ background: #f8d7da; color: #721c24; }}
+        .button-group {{ display: flex; gap: 10px; }}
+        .button-group button {{ flex: 1; }}
+        button.secondary {{ background: #6c757d; }}
+        button.secondary:hover {{ background: #5a6268; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🌐 ESP32 WiFi Setup</h1>
-        <div class="info">
-            <strong>Setup Instructions:</strong><br>
-            Enter your WiFi network details and NTP server to sync time.
+        <h1>🌐 ESP32 WiFi Manager</h1>
+        
+        <div class="section">
+            <h2>⏰ Time Synchronization</h2>
+            <div class="info">
+                Your device time will be synchronized with your browser's local time.
+            </div>
+            <div class="time-display">
+                <div class="label">Client Time</div>
+                <div class="time" id="clientTime">--:--:--</div>
+            </div>
+            <div class="time-display">
+                <div class="label">Device Time</div>
+                <div class="time" id="deviceTime">--:--:--</div>
+            </div>
+            <div class="button-group">
+                <button type="button" onclick="updateDeviceTime()" class="secondary">🔄 Refresh Device Time</button>
+                <button type="button" onclick="syncTime()">⚡ Sync Time</button>
+            </div>
+            <div id="timeStatus"></div>
         </div>
-        <form method="POST" action="/save">
-            <label for="ssid">WiFi Network (SSID):</label>
-            <input type="text" id="ssid" name="ssid" placeholder="Your WiFi name" required>
-            
-            <label for="password">Password:</label>
-            <input type="password" id="password" name="password" placeholder="Your WiFi password" required>
-            
-            <label for="ntp_server">NTP Server (for time sync):</label>
-            <input type="text" id="ntp_server" name="ntp_server" value="pool.ntp.org" placeholder="pool.ntp.org">
-            
-            <button type="submit">💾 Save Configuration</button>
-        </form>
+        
+        <div class="section">
+            <h2>📡 WiFi Configuration</h2>
+            <div class="info">
+                Enter your WiFi network details.
+            </div>
+            <form method="POST" action="/save">
+                <label for="ssid">WiFi Network (SSID):</label>
+                <input type="text" id="ssid" name="ssid" placeholder="Your WiFi name" required>
+                
+                <label for="password">Password:</label>
+                <input type="password" id="password" name="password" placeholder="Your WiFi password" required>
+                
+                <button type="submit">💾 Save WiFi Configuration</button>
+            </form>
+        </div>
     </div>
+    
+    <script>
+        // Update client time display every second
+        function updateClientTime() {{
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            document.getElementById('clientTime').innerText = `${{hours}}:${{minutes}}:${{seconds}}`;
+        }}
+        
+        // Get device time from ESP32
+        function updateDeviceTime() {{
+            fetch('/get_time')
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.hour !== undefined) {{
+                        const hours = String(data.hour).padStart(2, '0');
+                        const minutes = String(data.minute).padStart(2, '0');
+                        const seconds = String(data.second).padStart(2, '0');
+                        document.getElementById('deviceTime').innerText = `${{hours}}:${{minutes}}:${{seconds}}`;
+                    }}
+                }})
+                .catch(error => console.error('Error:', error));
+        }}
+        
+        // Sync time from client to device
+        function syncTime() {{
+            const now = new Date();
+            const timestamp = now.getTime(); // milliseconds
+            
+            const statusDiv = document.getElementById('timeStatus');
+            statusDiv.innerHTML = '<div class="status">⏳ Syncing time...</div>';
+            
+            fetch('/update_time', {{
+                method: 'POST',
+                headers: {{
+                    'Content-Type': 'application/json'
+                }},
+                body: JSON.stringify({{ timestamp: timestamp }})
+            }})
+            .then(response => response.json())
+            .then(data => {{
+                if (data.status === 'success') {{
+                    statusDiv.innerHTML = '<div class="status success">✓ Time synchronized successfully!</div>';
+                    setTimeout(() => {{
+                        updateDeviceTime();
+                        statusDiv.innerHTML = '';
+                    }}, 1000);
+                }} else {{
+                    statusDiv.innerHTML = '<div class="status error">✗ Failed to sync time</div>';
+                }}
+            }})
+            .catch(error => {{
+                console.error('Error:', error);
+                statusDiv.innerHTML = '<div class="status error">✗ Error during sync</div>';
+            }});
+        }}
+        
+        // Initialize
+        setInterval(updateClientTime, 1000);
+        updateClientTime();
+        updateDeviceTime();
+        setInterval(updateDeviceTime, 5000);
+    </script>
 </body>
 </html>"""
         
@@ -221,9 +394,9 @@ Content-Type: text/html; charset=utf-8
         <p>Please wait a few seconds...</p>
     </div>
     <script>
-        setTimeout(function() {
+        setTimeout(function() {{
             window.location.href = '/';
-        }, 3000);
+        }}, 3000);
     </script>
 </body>
 </html>"""
@@ -269,6 +442,19 @@ Content-Type: text/html; charset=utf-8
 </html>"""
         return html
     
+    def get_json_response(self, data, status_code=200):
+        """Return JSON response"""
+        json_data = json.dumps(data)
+        
+        status_line = "HTTP/1.1 200 OK" if status_code == 200 else f"HTTP/1.1 {status_code}"
+        
+        response = f"""{status_line}
+Content-Type: application/json
+Content-Length: {len(json_data)}
+
+{json_data}"""
+        return response
+    
     def get_status_json(self):
         """Return JSON status"""
         status = {
@@ -280,35 +466,13 @@ Content-Type: text/html; charset=utf-8
             ifconfig = self.wlan.ifconfig()
             status["ip"] = ifconfig[0]
         
-        response = f"""HTTP/1.1 200 OK
-Content-Type: application/json
-
-{json.dumps(status)}"""
-        return response
-    
-    def sync_time(self, ntp_server=None):
-        """Sync time with NTP server"""
-        if ntp_server is None:
-            ntp_server = self.config.get("ntp_server", "pool.ntp.org")
-        
-        try:
-            print(f"Syncing time with {ntp_server}...")
-            ntptime.server = ntp_server
-            ntptime.settime()
-            
-            rtc = RTC()
-            time_tuple = rtc.datetime()
-            print(f"Time synced: {time_tuple}")
-            return True
-        except Exception as e:
-            print(f"Failed to sync time: {e}")
-            return False
+        return self.get_json_response(status)
     
     def reset_config(self):
         """Reset configuration"""
         try:
             os.remove(self.config_file)
-            self.config = {"ssid": "", "password": "", "ntp_server": "pool.ntp.org"}
+            self.config = {"ssid": "", "password": ""}
             return True
         except:
             return False
