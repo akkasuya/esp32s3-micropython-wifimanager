@@ -44,6 +44,10 @@ class WiFiManager:
         """Get timezone offset from config"""
         return self.config.get("timezone", 0)
     
+    def get_ssid(self):
+        """Get saved SSID"""
+        return self.config.get("ssid", "")
+    
     def connect(self, timeout=10):
         """Connect to WiFi with saved credentials"""
         if not self.has_credentials():
@@ -325,6 +329,11 @@ class WiFiManager:
     
     def get_config_page(self):
         """Return HTML configuration page with time sync and timezone"""
+        # Get saved values
+        saved_ssid = self.config.get("ssid", "")
+        saved_timezone = self.config.get("timezone", 0)
+        has_saved_ssid = bool(saved_ssid)
+        
         html = """HTTP/1.1 200 OK
 Content-Type: text/html; charset=utf-8
 Content-Length: {length}
@@ -359,11 +368,15 @@ Content-Length: {length}
         button.secondary {{ background: #6c757d; }}
         button.secondary:hover {{ background: #5a6268; }}
         .timezone-note {{ font-size: 12px; color: #666; margin-top: 5px; }}
+        .saved-info {{ background: #fff3cd; padding: 12px; margin-bottom: 15px; border-radius: 5px; color: #856404; border-left: 4px solid #ffc107; }}
+        .saved-info strong {{ color: #154360; }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🌐 ESP32 WiFi Manager</h1>
+        
+        {saved_section}
         
         <div class="section">
             <h2>⏰ Time Synchronization</h2>
@@ -392,7 +405,7 @@ Content-Length: {length}
             </div>
             
             <label for="timezone">Timezone Offset (hours):</label>
-            <input type="number" id="timezone" min="-12" max="14" step="0.5" value="0" placeholder="e.g., +7 for Bangkok, -5 for New York">
+            <input type="number" id="timezone" min="-12" max="14" step="0.5" value="{saved_timezone}" placeholder="e.g., +7 for Bangkok, -5 for New York">
             <div class="timezone-note">
                 Examples: UTC+0=0, Bangkok=7, Tokyo=9, Sydney=10, London=0, New York=-5, Los Angeles=-8
             </div>
@@ -411,13 +424,13 @@ Content-Length: {length}
             </div>
             <form method="POST" action="/save">
                 <label for="ssid">WiFi Network (SSID):</label>
-                <input type="text" id="ssid" name="ssid" placeholder="Your WiFi name" required>
+                <input type="text" id="ssid" name="ssid" placeholder="Your WiFi name" value="{saved_ssid}" required>
                 
                 <label for="password">Password:</label>
                 <input type="password" id="password" name="password" placeholder="Your WiFi password" required>
                 
                 <label for="timezone_form">Timezone Offset (hours):</label>
-                <input type="number" id="timezone_form" name="timezone" min="-12" max="14" step="0.5" value="0" placeholder="e.g., +7">
+                <input type="number" id="timezone_form" name="timezone" min="-12" max="14" step="0.5" value="{saved_timezone}" placeholder="e.g., +7">
                 
                 <button type="submit">💾 Save WiFi Configuration</button>
             </form>
@@ -426,11 +439,11 @@ Content-Length: {length}
     
     <script>
         // Format date function
-        function formatDate(year, month, day) {
+        function formatDate(year, month, day) {{
             return year.toString().padStart(4, '0') + '/' + 
                    month.toString().padStart(2, '0') + '/' + 
                    day.toString().padStart(2, '0');
-        }
+        }}
         
         // Update client time display every second
         function updateClientTime() {{
@@ -538,9 +551,25 @@ Content-Length: {length}
 </body>
 </html>"""
         
-        body = html.split('\n\n', 1)[1]
+        # Build saved section
+        if has_saved_ssid:
+            saved_section = f"""<div class="section">
+            <div class="saved-info">
+                ✓ <strong>Saved WiFi:</strong> {saved_ssid}
+            </div>
+        </div>"""
+        else:
+            saved_section = ""
+        
+        html_formatted = html.format(
+            saved_section=saved_section,
+            saved_ssid=saved_ssid,
+            saved_timezone=saved_timezone
+        )
+        
+        body = html_formatted.split('\n\n', 1)[1]
         content_length = len(body)
-        return html.format(length=content_length)
+        return html_formatted.replace("{length}", str(content_length))
     
     def get_success_page(self):
         """Return success page"""
